@@ -1,6 +1,6 @@
 import { XMLParser } from "fast-xml-parser";
 import type { Incident } from "../schemas/mono";
-import { classifyIncident } from "./classify";
+import { classifyIncident, PRODUCT_ALIASES } from "./classify";
 
 export const RSS_URL = "https://status.mono.co/history.rss";
 export const CACHE_TTL_MS = 60_000;
@@ -31,52 +31,68 @@ export function extractIncidentId(url: string): string {
 }
 
 export function isIncidentActive(item: { title?: string; description?: string }): boolean {
-  const title = (item.title ?? "").toLowerCase();
-  const description = (item.description ?? "").toLowerCase();
-  const combined = `${title} ${description}`;
-  const text = stripHtml(item.description ?? "").toLowerCase();
   const latest = (extractLatestStatus(item.description ?? "") ?? "").toLowerCase();
   if (["resolved", "completed", "operational"].includes(latest)) return false;
-  const isExplicitlyResolved = combined.includes("resolved") && latest === "";
-  if (isExplicitlyResolved) return false;
-  if (latest && ["resolved", "completed"].includes(latest)) return false;
-  const indicatesDowntime =
-    combined.includes("downtime") ||
-    combined.includes("outage") ||
-    combined.includes("investigating") ||
-    combined.includes("identified") ||
-    combined.includes("monitoring") ||
-    combined.includes("degraded") ||
-    combined.includes("disruption") ||
-    combined.includes("intermittent");
-  const isResolved = combined.includes("resolved") || combined.includes("completed");
-  if (isResolved) {
-    return combined.includes("investigating") || combined.includes("identified") || combined.includes("monitoring")
-      ? !text.includes("resolved")
-      : false;
+  if (!latest) {
+    const text = stripHtml(item.description ?? "").toLowerCase();
+    if (text.includes("resolved") || text.includes("completed")) return false;
   }
-  return indicatesDowntime;
+  return true;
 }
 
-export function buildSummary(incidents: Incident[]) {
-  const by_product: Record<string, number> = {};
-  const by_service: Record<string, number> = {};
-  const by_severity: Record<string, number> = {};
-  for (const inc of incidents) {
-    for (const p of inc.products) by_product[p] = (by_product[p] ?? 0) + 1;
-    for (const s of inc.affected_services) by_service[s] = (by_service[s] ?? 0) + 1;
-    by_severity[inc.severity] = (by_severity[inc.severity] ?? 0) + 1;
+export type IncidentFilters = {
+  product?: string;
+  service?: string;
+  institution?: string;
+  provider?: string;
+  auth_method?: string;
+  scope?: "institution" | "systemic";
+  severity?: string;
+  status?: string;
+};
+
+export function filterIncidents(incidents: Incident[], filters: IncidentFilters): Incident[] {
+  let result = incidents;
+  if (filters.product) {
+    const raw = filters.product.toLowerCase();
+    const p = PRODUCT_ALIASES[raw] ?? raw;
+    result = result.filter((i) => i.products.some((x) => x.toLowerCase() === p));
   }
-  return { by_product, by_service, by_severity };
+  if (filters.service) {
+    const s = filters.service.toLowerCase();
+    result = result.filter((i) => i.affected_services.some((x) => x.toLowerCase() === s));
+  }
+  const inst = (filters.institution ?? filters.provider)?.toLowerCase();
+  if (inst) {
+    result = result.filter((i) => (i.provider ?? "").toLowerCase().includes(inst));
+  }
+  if (filters.auth_method) {
+    const am = filters.auth_method.toLowerCase();
+    result = result.filter((i) => i.auth_method === null || i.auth_method.toLowerCase() === am);
+  }
+  if (filters.scope) {
+    const sc = filters.scope.toLowerCase();
+    result = result.filter((i) => i.scope.toLowerCase() === sc);
+  }
+  if (filters.severity) {
+    const sev = filters.severity.toLowerCase();
+    result = result.filter((i) => i.severity.toLowerCase() === sev);
+  }
+  if (filters.status) {
+    const st = filters.status.toLowerCase();
+    result = result.filter((i) => (i.status ?? "").toLowerCase() === st);
+  }
+  return result;
 }
 
 export function parseMonoRss(xml: string): Incident[] {
   const parsed = parser.parse(xml);
   const rawItems = parsed?.rss?.channel?.item ?? [];
   const items: any[] = Array.isArray(rawItems) ? rawItems : rawItems ? [rawItems] : [];
-  const incidents: Incident[] = items.map((item) => {
+
+  const withTimestamp = items.map((item) => {
     const pubDate = new Date(item.pubDate);
-    const timestamp = pubDate.getTime();
+    const ts = pubDate.getTime();
     const rawDesc: string =
       typeof item.description === "string" ? item.description : item.description?.["#text"] ?? item.description?.toString?.() ?? "";
     const description = stripHtml(rawDesc);
@@ -85,25 +101,30 @@ export function parseMonoRss(xml: string): Incident[] {
     const rawLink: string = item.link ?? "";
     const rawGuid: string = typeof item.guid === "object" ? item.guid["#text"] ?? item.guid : item.guid ?? rawLink ?? "";
     const link = rawLink || (rawGuid.startsWith("http") ? rawGuid : `https://status.mono.co/incidents/${rawGuid}`);
-    const guid = extractIncidentId(rawGuid || rawLink);
+    const id = extractIncidentId(rawGuid || rawLink);
+
     return {
+      _ts: ts,
       title,
       description,
       link,
-      guid,
-      published_at: isNaN(timestamp) ? new Date().toISOString() : pubDate.toISOString(),
-      timestamp: isNaN(timestamp) ? Date.now() : timestamp,
+      id,
+      published_at: isNaN(ts) ? new Date().toISOString() : pubDate.toISOString(),
       is_ongoing: isIncidentActive(item),
       status: extractLatestStatus(rawDesc),
       products: cls.products,
       affected_services: cls.affected_services,
       outage_type: cls.outage_type,
       provider: cls.provider,
+      institution: cls.institution,
+      auth_method: cls.auth_method,
+      scope: cls.scope,
       severity: cls.severity,
     };
   });
-  incidents.sort((a, b) => b.timestamp - a.timestamp);
-  return incidents;
+
+  withTimestamp.sort((a, b) => b._ts - a._ts);
+  return withTimestamp.map(({ _ts, ...rest }) => rest);
 }
 
 export async function fetchMonoFeed(fetcher: typeof fetch = fetch): Promise<Incident[]> {

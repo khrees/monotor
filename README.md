@@ -8,10 +8,17 @@ Elysia + Bun + TypeScript + Zod microservice that scrapes `https://status.mono.c
 ## Inference
 Mono's RSS only gives `title` + HTML `description` + `pubDate`. This service extracts (all `snake_case`):
 
-- `products` — `["direct_debit"]`, `["bvn"]`, `["lookup"]`, `["auth"]`, `["data_sync"]`
-- `affected_services` — `mandate_approval`, `mandate_creation`, `account_debit`, `nin_lookup`, `bvn_igree`, `otp`, `bank_auth`, `360_view`, …
+- `products` — `direct_debit` | `lookup` | `prove` | `connect` | `payments` | `general`
+  - *Lookup*: Mono's Identity Verification product (BVN, NIN, CAC, TIN, etc. — also maps legacy aliases `kyc` and `bvn`).
+  - *Direct Debit*: Recurring payments, mandate creation, mandate approval, account debits. (BVN iGree outages also tag `direct_debit` as iGree is used for mandate approval).
+  - *Prove*: Standalone identity verification widget.
+  - *Connect*: Financial Data (Account linking, statement pages, bank-specific auth/connection).
+  - *Payments*: DirectPay, pay with bank, disbursements.
+- `affected_services` — `mandate_approval`, `mandate_creation`, `mandate_authorization`, `account_debit`, `nin_lookup`, `bvn_igree`, `bvn_legacy`, `otp`, `bank_auth`, `360_view`, `cac_lookup`, `tin_lookup`, `prove_verification`, …
 - `outage_type` — `intermittent_downtime` | `degraded_performance` | `authentication_outage` | `otp_failure` | `downtime`
-- `provider` — `NIBSS` | `FCMB` | `Providus Bank` … or `null`
+- `provider` / `institution` — `NIBSS` | `FCMB` | `Providus Bank` … or `null`
+- `auth_method` — `mobile` | `internet` | `null` (retail banking authentication method)
+- `scope` — `institution` (bank-specific) | `systemic` (product-wide)
 - `severity` — `major` | `minor` | `critical`
 - `status` — first `<strong>` in description (`Identified`/`Investigating`/`Monitoring`/`Resolved`)
 - `is_ongoing` — not `Resolved`/`Completed`
@@ -21,22 +28,24 @@ Regex tables in `src/lib/classify.ts`.
 ## Incident shape
 ```json
 {
-  "title": "Direct Debit: Intermittent Downtime",
-  "description": "Sep 4 , 17:46 BST Identified - Please note that debit processing ...",
-  "link": "https://status.mono.co/incidents/yqbzdtffykhm",
-  "guid": "yqbzdtffykhm",
+  "title": "FCMB Mobile (Authentication Outage)",
+  "description": "We are presently investigating an issue where users are encountering challenges in authenticating with their FCMB mobile details. The internet banking authentication method remains unaffected.",
+  "link": "https://status.mono.co/incidents/ht4433g0pl6s",
+  "id": "ht4433g0pl6s",
   "published_at": "2026-09-04T17:46:59.000Z",
-  "timestamp": 1725475619000,
   "is_ongoing": true,
-  "status": "Identified",
-  "products": ["direct_debit"],
-  "affected_services": ["mandate_approval","account_debit"],
-  "outage_type": "intermittent_downtime",
-  "provider": "NIBSS",
-  "severity": "minor"
+  "status": "Investigating",
+  "products": ["connect"],
+  "affected_services": ["bank_auth"],
+  "outage_type": "authentication_outage",
+  "provider": "FCMB",
+  "institution": "FCMB",
+  "auth_method": "mobile",
+  "scope": "institution",
+  "severity": "major"
 }
 ```
-`guid` is the incident id only; `link` is the full URL. `description` is plain text (HTML stripped).
+`id` is the incident slug; `link` is the full URL. `description` is plain text (HTML stripped).
 
 ## Endpoints
 
@@ -44,82 +53,89 @@ Regex tables in `src/lib/classify.ts`.
 |--------|------|-------------|
 | GET | `/` | Service info |
 | GET | `/health` | Health check |
-| GET | `/api/uptime` | Main — sorted incidents + downtime detection |
-| GET | `/api/history` | Paginated history |
-| GET | `/api/incidents/:guid` | Single incident by id |
+| GET | `/api/incidents` | Status + incidents (filterable, paginated) |
+| GET | `/api/incidents/:id` | Single incident by id |
 
-### Query params
+### Query params — `GET /api/incidents`
 
-Both `/api/uptime` and `/api/history` support:
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `product` | enum | — | Filter by product: `direct_debit`, `lookup`, `prove`, `connect`, `payments`, `general` (aliases `kyc`, `bvn`, `data_sync`, `auth` automatically resolve; 422 on invalid) |
+| `service` | string | — | Filter by affected service: `mandate_approval`, `mandate_creation`, `nin_lookup`, `bvn_igree`, `otp`, `bank_auth`, … |
+| `institution` | string | — | Filter by bank/provider: `gtbank`, `fcmb`, `zenith`, `stanbic`, `providus`, `nibss`, etc. (alias: `provider`) |
+| `auth_method` | enum | — | Filter by auth method: `mobile` or `internet` (422 on invalid) |
+| `scope` | enum | — | Filter by scope: `institution` (bank-specific) or `systemic` (product-wide; 422 on invalid) |
+| `severity` | enum | — | `critical` / `major` / `minor` / `none` (422 on invalid) |
+| `status` | enum | — | `identified` / `investigating` / `monitoring` / `resolved` (422 on invalid) |
+| `ongoing` | boolean | `false` | `true` → only ongoing incidents in `incidents` list |
+| `offset` | int | `0` | Pagination offset |
+| `limit` | int | `20` | Page size (1–100) |
 
-| Param | Type | Description |
-|-------|------|-------------|
-| `product` | string | Filter by product slug: `direct_debit`, `bvn`, `lookup`, `auth`, `data_sync`, `kyc`, `payments`, `general` |
-| `service` | string | Filter by affected service: `mandate_approval`, `mandate_creation`, `account_debit`, `nin_lookup`, `bvn_igree`, `bank_auth`, `otp`, … |
-| `severity` | string | `major` / `minor` / `critical` / `none` |
-| `status` | string | Incident status: `identified`, `investigating`, `monitoring`, `resolved` (case-insensitive) |
-| `offset` | int | Pagination start (default `0`) |
-| `limit` | int | Pagination size (1–100, default: no limit for `/api/uptime`, `20` for `/api/history`) |
+### Status Levels & Granularity
 
-Additional for `/api/uptime` only:
+A single bank having an issue does **not** take Connect down; and a single auth method having an issue does **not** take the entire bank down:
+- **`OPERATIONAL`**: Everything running normally (or the queried bank/auth-method has no active incidents).
+- **`DEGRADED`**: An isolated bank has an issue, OR only one auth method is down while the other works (e.g. FCMB mobile auth is failing, but FCMB internet banking is operational). `has_active_downtime: false`, `has_degraded_service: true`.
+- **`DOWNTIME_DETECTED`**: Systemic downtime on the core product, OR the specific queried bank/auth-method is down (e.g. `?institution=fcmb&auth_method=mobile`).
 
-| Param | Description |
-|-------|-------------|
-| `active_only` | `true` → only `is_ongoing` incidents in `all_incidents` |
-| `include_summary` | `true` → include `summary: {by_product, by_service, by_severity}` (off by default) |
+### Response — `GET /api/incidents`
 
-All filters (except offset/limit) also restrict `active_incidents`/`active_incidents_count`/`has_active_downtime` so `?product=direct_debit&active_only=true` gives exactly what that integration should show.
-
-**Response pagination (when `offset`/`limit` used):**
 ```json
-{ "pagination": { "offset": 0, "limit": 10, "total": 25, "returned": 10 } }
+{
+  "status": "DEGRADED",
+  "has_active_downtime": false,
+  "has_degraded_service": true,
+  "active_incidents_count": 1,
+  "last_checked": "2026-09-04T17:46:59.000Z",
+  "active_incidents": [{
+    "title": "FCMB Mobile (Authentication Outage)",
+    "provider": "FCMB",
+    "scope": "institution",
+    "is_ongoing": true
+  }],
+  "incidents": [{ "..." }],
+  "pagination": { "offset": 0, "limit": 20, "total": 25, "returned": 20 }
+}
 ```
+
+### Error responses
+
+All errors return a consistent shape:
+```json
+{ "error": "error_code", "message": "Human-readable description" }
+```
+
+| Status | Error code | When |
+|--------|-----------|------|
+| 404 | `not_found` | Unknown route or incident |
+| 422 | `invalid_param` | Invalid query parameter value |
+| 502 | `upstream_unavailable` | RSS feed unreachable |
 
 ### Examples
 ```bash
-# Current downtime — is anything down?
-curl http://localhost:3000/api/uptime | jq '{status, has_active_downtime, active_incidents_count}'
+# Current status — is anything down?
+curl http://localhost:3000/api/incidents | jq '{status, has_active_downtime, has_degraded_service, active_incidents_count}'
 
-# Paginated, only ongoing + summary
-curl "http://localhost:3000/api/uptime?active_only=true&include_summary=true&limit=5&offset=0" | jq
+# Only active / ongoing incidents
+curl "http://localhost:3000/api/incidents?ongoing=true&limit=5" | jq
 
-# What you care about if you use Direct Debit mandate approval
-curl "http://localhost:3000/api/uptime?product=direct_debit&service=mandate_approval&active_only=true" | jq
+# Check if a specific bank authentication method is down (e.g. FCMB mobile vs internet)
+curl "http://localhost:3000/api/incidents?product=connect&institution=fcmb&auth_method=mobile" | jq
 
-# All lookup degraded, page 2
-curl "http://localhost:3000/api/uptime?product=lookup&status=investigating&offset=10&limit=10" | jq
+# Check if GTBank is operational
+curl "http://localhost:3000/api/incidents?product=connect&institution=gtbank" | jq
 
-# History filtered by severity + status
-curl "http://localhost:3000/api/history?severity=minor&status=identified&limit=5&offset=0" | jq
+# Direct Debit mandate approval status
+curl "http://localhost:3000/api/incidents?product=direct_debit&service=mandate_approval&ongoing=true" | jq
 
-# NIN lookup only
-curl "http://localhost:3000/api/history?product=lookup&service=nin_lookup&limit=10" | jq
-```
+# All lookup issues under investigation, page 2
+curl "http://localhost:3000/api/incidents?product=lookup&status=investigating&offset=10&limit=10" | jq
 
-### Current downtime (2026-09-04)
-```bash
-curl http://localhost:3000/api/uptime | jq
-```
-```json
-{
-  "status": "DOWNTIME_DETECTED",
-  "has_active_downtime": true,
-  "active_incidents_count": 1,
-  "active_incidents": [{
-    "title": "Direct Debit: Intermittent Downtime",
-    "guid": "yqbzdtffykhm",
-    "link": "https://status.mono.co/incidents/yqbzdtffykhm",
-    "products": ["direct_debit"],
-    "affected_services": ["mandate_approval","account_debit"],
-    "outage_type": "intermittent_downtime",
-    "provider": "NIBSS",
-    "severity": "minor",
-    "status": "Identified",
-    "is_ongoing": true
-  }],
-  "all_incidents": [ ... ],
-  "pagination": { "offset": 0, "limit": null, "total": 25, "returned": 25 }
-}
+# Filter by severity
+curl "http://localhost:3000/api/incidents?severity=minor&status=identified&limit=5" | jq
+
+# Single incident lookup by ID
+curl http://localhost:3000/api/incidents/yqbzdtffykhm | jq
 ```
 
 ## Cron — polling the RSS
@@ -146,7 +162,7 @@ Cron logs each tick: `[cron] 2026-09-04T12:00:00.000Z polled 25 incidents, activ
 ## How it works
 1. `GET https://status.mono.co/history.rss` (`User-Agent: MonoUptime/1.0`)
 2. `fast-xml-parser` → `rss.channel.item[]`
-3. `parseMonoRss()` → `stripHtml` + `is_ongoing` + `classifyIncident()` → sorted `b.timestamp-a.timestamp`
+3. `parseMonoRss()` → `stripHtml` + `is_ongoing` + `classifyIncident()` → sorted by `published_at` desc
 4. `createMonoCache(60s)` — TTL + dedupes concurrent fetches
 5. `src/lib/cron.ts` — `setInterval` every `CRON_INTERVAL_MINUTES` (default 30m) calls `cache.get()` to keep cache warm
 
@@ -154,7 +170,7 @@ Cron logs each tick: `[cron] 2026-09-04T12:00:00.000Z polled 25 incidents, activ
 ```bash
 bun install
 bun run dev   # http://localhost:3000
-bun test      # 19 tests
+bun test      # 35 tests
 bun run typecheck
 ```
 
@@ -163,12 +179,12 @@ bun run typecheck
 src/
   app.ts
   index.ts            # starts cron + server
-  lib/mono.ts         # fetch/parse/sort/cache
+  lib/mono.ts         # fetch/parse/sort/cache/filter
   lib/classify.ts     # regex tables PRODUCT/SERVICE/OUTAGE/PROVIDER
   lib/cron.ts         # setInterval poll every 30m (configurable)
   routes/health.ts
-  routes/mono.ts      # /api/uptime, /api/history, /api/incidents/:guid
-  schemas/mono.ts     # Zod (snake_case)
+  routes/mono.ts      # /api/incidents, /api/incidents/:id
+  schemas/mono.ts     # Zod incident schema
 tests/
   health.test.ts
   mono.test.ts

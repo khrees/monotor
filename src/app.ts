@@ -7,20 +7,24 @@ export function createApp(cache = createMonoCache()) {
   return new Elysia()
     .get("/", () => ({
       name: "mono-uptime",
-      version: "0.1.0",
-      docs: "/api/uptime",
-      endpoints: ["/health", "/api/uptime", "/api/history", "/api/incidents/:guid"],
+      version: "0.2.0",
+      docs: "/api/incidents",
+      endpoints: ["/health", "/api/incidents", "/api/incidents/:id"],
     }))
     .use(healthRoutes)
     .use(createMonoRoutes(cache))
     .onError(({ code, error, set }) => {
       if (code === "NOT_FOUND") {
         set.status = 404;
-        return { error: "Not found" };
+        return { error: "not_found", message: "Not found" };
+      }
+      if (code === "VALIDATION") {
+        set.status = 422;
+        return { error: "validation_error", message: error.message };
       }
       console.error(error);
       set.status = 500;
-      return { error: "Internal server error" };
+      return { error: "internal_error", message: "Internal server error" };
     });
 }
 

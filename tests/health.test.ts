@@ -15,7 +15,7 @@ describe("health & root", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.name).toBe("mono-uptime");
-    expect(body.endpoints).toContain("/api/uptime");
+    expect(body.endpoints).toContain("/api/incidents");
   });
 
   it("GET /health", async () => {
