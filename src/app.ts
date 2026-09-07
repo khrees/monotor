@@ -1,13 +1,15 @@
 import { Elysia } from "elysia";
+import { cors } from "@elysiajs/cors";
 import { healthRoutes } from "./routes/health";
 import { createMonoRoutes } from "./routes/mono";
 import { createMonoCache } from "./lib/mono";
 
 export function createApp(cache = createMonoCache()) {
   return new Elysia()
+    .use(cors())
     .get("/", () => ({
       name: "mono-uptime",
-      version: "0.2.0",
+      version: "0.1.0",
       docs: "/api/incidents",
       endpoints: ["/health", "/api/incidents", "/api/incidents/:id"],
     }))

@@ -58,6 +58,7 @@ export function createMonoRoutes(cache = createMonoCache()) {
     }
 
     try {
+      set.headers["cache-control"] = "public, max-age=15, stale-while-revalidate=60";
       const { incidents: allIncidents, last_checked } = await cache.get();
       const filtered = filterIncidents(allIncidents, {
         product: query.product,

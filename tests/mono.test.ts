@@ -58,9 +58,10 @@ describe("stripHtml / extractLatestStatus / isIncidentActive / extractIncidentId
 });
 
 describe("classifyIncident", () => {
-  it("classifies direct_debit with mandate_approval + NIBSS", () => {
+  it("classifies direct_debit with mandate_approval + NIBSS and tags payments", () => {
     const c = classifyIncident("Direct Debit: Intermittent Downtime", "mandate approval is still experiencing downtime from NIBSS", "");
     expect(c.products).toContain("direct_debit");
+    expect(c.products).toContain("payments"); // DD is part of Payments suite
     expect(c.affected_services).toContain("mandate_approval");
     expect(c.provider).toBe("NIBSS");
     expect(c.outage_type).toBe("intermittent_downtime");
@@ -103,6 +104,79 @@ describe("classifyIncident", () => {
     expect(internetInc.auth_method).toBe("internet");
     expect(internetInc.institution).toBe("FCMB");
   });
+
+  it("classifies account_debit when debits are affected", () => {
+    const c = classifyIncident(
+      "Direct Debit: Service Downtime",
+      "We are experiencing downtime affecting the mandate creation, approval, and debit services. As a result, you may encounter an error when attempting to create a mandate or initiate a debit.",
+      ""
+    );
+    expect(c.products).toContain("direct_debit");
+    expect(c.affected_services).toContain("mandate_creation");
+    expect(c.affected_services).toContain("mandate_approval");
+    expect(c.affected_services).toContain("account_debit");
+    expect(c.affected_services).not.toContain("mandate"); // generic deduplicated
+  });
+
+  it("classifies account_debit across various phrasings (account debit, attempt to debit, debit failures)", () => {
+    const phrasings = [
+      { title: "Direct Debit: Account debit failure", desc: "users unable to debit accounts" },
+      { title: "Stanbic IBTC Downtime [Direct Debit]", desc: "you may encounter errors when attempting to debit" },
+      { title: "Direct Debit: Mandate Debit downtime", desc: "issues affecting mandate debit operations" },
+      { title: "Direct Debit: Debit Service Outage", desc: "errors when debiting customer accounts" },
+    ];
+
+    for (const p of phrasings) {
+      const res = classifyIncident(p.title, p.desc, "");
+      expect(res.products).toContain("direct_debit");
+      expect(res.affected_services).toContain("account_debit");
+    }
+  });
+
+  it("does NOT classify account_debit when incident text states debits remain unaffected", () => {
+    const c = classifyIncident(
+      "Mandate Approval Downtime: Providus Bank",
+      "We are currently experiencing downtime from Providus Bank, which is impacting mandate approval. In the meantime, mandate creation has been temporarily disabled. Debit processing remains unaffected and continues to operate normally.",
+      ""
+    );
+    expect(c.products).toContain("direct_debit");
+    expect(c.affected_services).toContain("mandate_approval");
+    expect(c.affected_services).toContain("mandate_creation");
+    expect(c.affected_services).not.toContain("account_debit");
+  });
+
+  it("classifies Mono Sweep as a mandate type under direct_debit and extracts authorization / creation", () => {
+    const authInc = classifyIncident(
+      "BVN [Igree] Downtime",
+      "We are currently experiencing downtime with the BVN iGree endpoint from NIBSS. This means you may encounter errors when validating or fetching your customers’ BVN details, as well as when trying to authorize a Mono Sweep mandate.",
+      ""
+    );
+    expect(authInc.products).toContain("lookup");
+    expect(authInc.products).toContain("direct_debit");
+    expect(authInc.affected_services).toContain("bvn_igree");
+    expect(authInc.affected_services).toContain("mono_sweep");
+    expect(authInc.affected_services).toContain("mandate_authorization");
+
+    const createInc = classifyIncident(
+      "BVN [iGree] Downtime",
+      "errors when fetching the BVN details of your customers and when trying to create a Mono Sweep Mandate.",
+      ""
+    );
+    expect(createInc.products).toContain("direct_debit");
+    expect(createInc.affected_services).toContain("mono_sweep");
+    expect(createInc.affected_services).toContain("mandate_creation");
+  });
+
+  it("suppresses services recommended as active fallbacks (e.g. continue using legacy BVN)", () => {
+    const c = classifyIncident(
+      "BVN [iGree] OTP failure",
+      "We’re currently investigating an issue affecting the delivery of the OTP. In the meantime, you may continue using the legacy BVN endpoint while the investigation is ongoing.",
+      ""
+    );
+    expect(c.affected_services).toContain("bvn_igree");
+    expect(c.affected_services).toContain("otp");
+    expect(c.affected_services).not.toContain("bvn_legacy");
+  });
 });
 
 describe("filterIncidents", () => {
@@ -142,6 +216,52 @@ describe("filterIncidents", () => {
     const filtered = filterIncidents(incidents, { product: "direct_debit", status: "identified" });
     expect(filtered.length).toBe(1);
     expect(filtered[0].id).toBe("yqbzdtffykhm");
+  });
+
+  it("resolves service aliases (mandate_debit, debit -> account_debit; sweep -> mono_sweep)", () => {
+    const incidents = [
+      {
+        title: "Direct Debit downtime",
+        description: "attempting a debit fails",
+        link: "https://status.mono.co/incidents/1",
+        id: "1",
+        published_at: new Date().toISOString(),
+        is_ongoing: true,
+        status: "Investigating",
+        products: ["direct_debit"],
+        affected_services: ["account_debit"],
+        outage_type: "downtime",
+        provider: "NIBSS",
+        institution: "NIBSS",
+        auth_method: null,
+        scope: "systemic" as const,
+        severity: "major" as const,
+      },
+      {
+        title: "Mono Sweep issue",
+        description: "authorizing a mono sweep mandate fails",
+        link: "https://status.mono.co/incidents/2",
+        id: "2",
+        published_at: new Date().toISOString(),
+        is_ongoing: true,
+        status: "Investigating",
+        products: ["direct_debit"],
+        affected_services: ["mono_sweep", "mandate_authorization"],
+        outage_type: "downtime",
+        provider: null,
+        institution: null,
+        auth_method: null,
+        scope: "systemic" as const,
+        severity: "major" as const,
+      },
+    ];
+
+    expect(filterIncidents(incidents, { service: "account_debit" }).length).toBe(1);
+    expect(filterIncidents(incidents, { service: "mandate_debit" }).length).toBe(1);
+    expect(filterIncidents(incidents, { service: "debit" }).length).toBe(1);
+    expect(filterIncidents(incidents, { service: "mono_sweep" }).length).toBe(1);
+    expect(filterIncidents(incidents, { service: "sweep" }).length).toBe(1);
+    expect(filterIncidents(incidents, { service: "sweep_mandate" }).length).toBe(1);
   });
 
   it("returns all when no filters", () => {
@@ -199,6 +319,10 @@ describe("GET /api/incidents", () => {
 
     const byLookup = await app.handle(new Request("http://localhost/api/incidents?product=lookup")).then((r) => r.json()) as any;
     expect(byLookup.incidents.length).toBe(2);
+
+    const byPayments = await app.handle(new Request("http://localhost/api/incidents?product=payments")).then((r) => r.json()) as any;
+    expect(byPayments.incidents.length).toBe(2);
+    for (const inc of byPayments.incidents) expect(inc.products).toContain("payments");
 
     const byService = await app.handle(new Request("http://localhost/api/incidents?service=mandate_approval")).then((r) => r.json()) as any;
     expect(byService.incidents.length).toBe(1);

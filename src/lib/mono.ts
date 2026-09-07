@@ -24,10 +24,11 @@ export function extractLatestStatus(description: string): string | null {
   return matches[0] ?? null;
 }
 
-export function extractIncidentId(url: string): string {
-  if (!url) return "";
-  const parts = url.replace(/\/$/, "").split("/");
-  return parts[parts.length - 1] ?? url;
+export function extractIncidentId(url: string | unknown): string {
+  if (url == null || url === "") return "";
+  const str = String(url);
+  const parts = str.replace(/\/$/, "").split("/");
+  return parts[parts.length - 1] ?? str;
 }
 
 export function isIncidentActive(item: { title?: string; description?: string }): boolean {
@@ -51,6 +52,13 @@ export type IncidentFilters = {
   status?: string;
 };
 
+export const SERVICE_ALIASES: Record<string, string> = {
+  mandate_debit: "account_debit",
+  debit: "account_debit",
+  sweep: "mono_sweep",
+  sweep_mandate: "mono_sweep",
+};
+
 export function filterIncidents(incidents: Incident[], filters: IncidentFilters): Incident[] {
   let result = incidents;
   if (filters.product) {
@@ -59,8 +67,9 @@ export function filterIncidents(incidents: Incident[], filters: IncidentFilters)
     result = result.filter((i) => i.products.some((x) => x.toLowerCase() === p));
   }
   if (filters.service) {
-    const s = filters.service.toLowerCase();
-    result = result.filter((i) => i.affected_services.some((x) => x.toLowerCase() === s));
+    const raw = filters.service.toLowerCase();
+    const resolved = SERVICE_ALIASES[raw] ?? raw;
+    result = result.filter((i) => i.affected_services.some((x) => x.toLowerCase() === resolved));
   }
   const inst = (filters.institution ?? filters.provider)?.toLowerCase();
   if (inst) {
@@ -68,6 +77,8 @@ export function filterIncidents(incidents: Incident[], filters: IncidentFilters)
   }
   if (filters.auth_method) {
     const am = filters.auth_method.toLowerCase();
+    // Incidents with auth_method === null affect both methods (whole-bank outage),
+    // so they pass through when filtering for a specific method.
     result = result.filter((i) => i.auth_method === null || i.auth_method.toLowerCase() === am);
   }
   if (filters.scope) {
@@ -128,8 +139,13 @@ export function parseMonoRss(xml: string): Incident[] {
 }
 
 export async function fetchMonoFeed(fetcher: typeof fetch = fetch): Promise<Incident[]> {
+  const signal = typeof AbortSignal !== "undefined" && "timeout" in AbortSignal
+    ? AbortSignal.timeout(8000)
+    : undefined;
+
   const res = await fetcher(RSS_URL, {
     headers: { "User-Agent": "MonoUptime/1.0 (+https://github.com/mono-uptime)" },
+    signal,
   });
   if (!res.ok) throw new Error(`Failed to fetch RSS: ${res.status} ${res.statusText}`);
   const xml = await res.text();
@@ -138,28 +154,47 @@ export async function fetchMonoFeed(fetcher: typeof fetch = fetch): Promise<Inci
 
 export function createMonoCache(ttlMs = CACHE_TTL_MS) {
   let cached: { at: number; data: Incident[] } | null = null;
-  let pending: Promise<Incident[]> | null = null;
+  let pending: Promise<{ at: number; data: Incident[] }> | null = null;
+
+  async function refresh(fetcher: typeof fetch = fetch): Promise<{ at: number; data: Incident[] }> {
+    if (pending) return pending;
+    pending = fetchMonoFeed(fetcher)
+      .then((data) => {
+        cached = { at: Date.now(), data };
+        return cached;
+      })
+      .catch((err) => {
+        if (cached) {
+          console.warn(`[cache] background refresh failed, keeping stale data: ${err?.message ?? err}`);
+          return cached;
+        }
+        throw err;
+      })
+      .finally(() => {
+        pending = null;
+      });
+    return pending;
+  }
 
   return {
     async get(fetcher: typeof fetch = fetch): Promise<{ incidents: Incident[]; cached: boolean; last_checked: string }> {
       const now = Date.now();
+
+      // 1. Fresh cache: instantaneous return (< 0.1ms)
       if (cached && now - cached.at < ttlMs) {
         return { incidents: cached.data, cached: true, last_checked: new Date(cached.at).toISOString() };
       }
-      if (pending) {
-        const data = await pending;
-        return { incidents: data, cached: true, last_checked: new Date(cached!.at).toISOString() };
+
+      // 2. Stale-While-Revalidate: if we have cached data, return it immediately (< 0.1ms)
+      // and revalidate asynchronously in the background so the partner never experiences latency.
+      if (cached) {
+        refresh(fetcher).catch(() => {});
+        return { incidents: cached.data, cached: true, last_checked: new Date(cached.at).toISOString() };
       }
-      pending = fetchMonoFeed(fetcher)
-        .then((data) => {
-          cached = { at: Date.now(), data };
-          return data;
-        })
-        .finally(() => {
-          pending = null;
-        });
-      const data = await pending;
-      return { incidents: data, cached: false, last_checked: new Date(cached!.at).toISOString() };
+
+      // 3. Cold start: await initial fetch once
+      const result = await refresh(fetcher);
+      return { incidents: result.data, cached: false, last_checked: new Date(result.at).toISOString() };
     },
     clear() {
       cached = null;
