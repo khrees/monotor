@@ -1,4 +1,4 @@
-# mono-uptime
+# monotor
 
 > **Live Status & Downtime Inference Microservice for Mono APIs**  
 > Built with Bun, Elysia, TypeScript, and fast-xml-parser.
@@ -37,7 +37,7 @@ Currently, Mono's only programmatic status channel is an RSS feed (`https://stat
 2. **Lack of Granular Scoping**: A single bank's mobile app being down does *not* take Mono Connect down. A failure in mandate approval does *not* mean existing scheduled debits will fail. Statuspage treats issues as monolithic.
 3. **No Direct Pre-Flight Endpoint**: Partners cannot make a 1ms pre-flight check before attempting high-stakes operations (like charging an account, approving a mandate, or initiating a bank link).
 
-`mono-uptime` bridges this gap as a high-performance stopgap microservice. It continuously ingests the RSS feed, runs regex NLP classification to deduce affected products, services, banks, and severity, and exposes a clean, queryable REST API.
+`monotor` bridges this gap as a high-performance stopgap microservice. It continuously ingests the RSS feed, runs regex NLP classification to deduce affected products, services, banks, and severity, and exposes a clean, queryable REST API.
 
 ---
 
@@ -50,7 +50,7 @@ Currently, Mono's only programmatic status channel is an RSS feed (`https://stat
                                │ (Polled every 15-30m or on-demand)
                                ▼
  ┌───────────────────────────────────────────────────────────┐
- │                      mono-uptime                          │
+ │                        monotor                            │
  │                                                           │
  │  1. fast-xml-parser: Ingests RSS channel items             │
  │  2. HTML Stripper & Status Extractor: (Investigating, etc)│
@@ -107,8 +107,8 @@ Direct Debit is a pillar of the Payments suite alongside DirectPay and Disburse:
 Ensure you have [Bun](https://bun.sh) installed (v1.1+):
 
 ```bash
-git clone https://github.com/your-org/mono-uptime.git
-cd mono-uptime
+git clone https://github.com/khrees/monotor.git
+cd monotor
 bun install
 ```
 

@@ -13,7 +13,7 @@ if (process.env.DISABLE_CRON !== "true" && process.env.NODE_ENV !== "test") {
 }
 
 app.listen(port, () => {
-  console.log(`🦊 mono-uptime running at http://localhost:${port} — GET /api/incidents`);
+  console.log(`🦊 monotor running at http://localhost:${port} — GET /api/incidents`);
 });
 
 export type { App } from "./app";

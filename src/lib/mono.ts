@@ -144,7 +144,7 @@ export async function fetchMonoFeed(fetcher: typeof fetch = fetch): Promise<Inci
     : undefined;
 
   const res = await fetcher(RSS_URL, {
-    headers: { "User-Agent": "MonoUptime/1.0 (+https://github.com/mono-uptime)" },
+    headers: { "User-Agent": "Monotor/0.1.0 (+https://github.com/khrees/monotor)" },
     signal,
   });
   if (!res.ok) throw new Error(`Failed to fetch RSS: ${res.status} ${res.statusText}`);

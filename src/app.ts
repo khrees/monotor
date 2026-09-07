@@ -8,7 +8,7 @@ export function createApp(cache = createMonoCache()) {
   return new Elysia()
     .use(cors())
     .get("/", () => ({
-      name: "mono-uptime",
+      name: "monotor",
       version: "0.1.0",
       docs: "/api/incidents",
       endpoints: ["/health", "/api/incidents", "/api/incidents/:id"],

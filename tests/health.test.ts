@@ -14,7 +14,8 @@ describe("health & root", () => {
     const res = await app.handle(new Request("http://localhost/"));
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body.name).toBe("mono-uptime");
+    expect(body.name).toBe("monotor");
+    expect(body.version).toBe("0.1.0");
     expect(body.endpoints).toContain("/api/incidents");
   });
 

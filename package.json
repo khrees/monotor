@@ -1,6 +1,7 @@
 {
-  "name": "mono-uptime",
+  "name": "monotor",
   "version": "0.1.0",
+  "repository": "https://github.com/khrees/monotor.git",
   "type": "module",
   "module": "src/index.ts",
   "scripts": {
