@@ -109,11 +109,14 @@ const SERVICE_PATTERNS: { re: RegExp; service: string }[] = [
 
   // Payments
   { re: /disburs/i, service: "disbursement" },
-  { re: /directpay|payment completion|pay with bank/i, service: "directpay" },
+  { re: /directpay|payment completion|pay with bank|pay-with-bank/i, service: "directpay" },
   { re: /pay with transfer/i, service: "pay_with_transfer" },
+  { re: /payment\s*authori[sz]ation/i, service: "payment_authorization" },
+  { re: /payment\s*confirmation/i, service: "payment_confirmation" },
+  { re: /payment\s*initiation/i, service: "payment_initiation" },
 
   // Lookup (Identity Verification)
-  { re: /nin.*lookup|nin\b/i, service: "nin_lookup" },
+  { re: /nin.*lookup|nin\b|national identity/i, service: "nin_lookup" },
   { re: /bvn.*igree|igree/i, service: "bvn_igree" },
   { re: /bvn.*legacy/i, service: "bvn_legacy" },
   { re: /\bbvn\b/i, service: "bvn" },
@@ -127,11 +130,15 @@ const SERVICE_PATTERNS: { re: RegExp; service: string }[] = [
   { re: /lookup\b.*api|lookup api/i, service: "lookup_api" },
 
   // Prove widget
-  { re: /\bprove\b/i, service: "prove_verification" },
+  { re: /\bprove\b.*auth/i, service: "prove_authentication" },
+  { re: /\bprove\b|\bprove\b.*verification/i, service: "prove_verification" },
 
   // Connect (Bank Auth & Data)
   { re: /mobile\b[^.;\n]*?auth|authentication outage|bank\s+auth|authenticating with|internet\s+downtime/i, service: "bank_auth" },
-  { re: /data connection|data sync|account linking/i, service: "data_sync" },
+  { re: /account linking/i, service: "account_linking" },
+  { re: /data retrieval/i, service: "data_retrieval" },
+  { re: /data connection|data sync/i, service: "data_sync" },
+  { re: /statement pages?/i, service: "statement_pages" },
 ];
 
 const OUTAGE_PATTERNS: { re: RegExp; type: OutageType }[] = [
@@ -148,10 +155,11 @@ const OUTAGE_PATTERNS: { re: RegExp; type: OutageType }[] = [
 const PROVIDER_PATTERNS: { re: RegExp; provider: string }[] = [
   { re: /nibss/i, provider: "NIBSS" },
   { re: /\bcac\b/i, provider: "CAC" },
-  { re: /stanbic ibtc/i, provider: "Stanbic IBTC" },
+  { re: /\bnimc\b/i, provider: "NIMC" },
+  { re: /stanbic ibtc|stanbic bank/i, provider: "Stanbic IBTC" },
   { re: /providus/i, provider: "Providus Bank" },
   { re: /\bfcmb\b/i, provider: "FCMB" },
-  { re: /\buba\b/i, provider: "UBA" },
+  { re: /\buba\b|united bank for africa/i, provider: "UBA" },
   { re: /\bsterling\b/i, provider: "Sterling Bank" },
   { re: /\bgtbank\b|\bgtb\b/i, provider: "GTBank" },
   { re: /\bwema\b|\balat\b/i, provider: "Wema Bank" },
@@ -160,11 +168,27 @@ const PROVIDER_PATTERNS: { re: RegExp; provider: string }[] = [
   { re: /first bank/i, provider: "First Bank" },
   { re: /access bank/i, provider: "Access Bank" },
   { re: /\bzenith\b/i, provider: "Zenith Bank" },
+  { re: /\bfidelity\b/i, provider: "Fidelity Bank" },
   { re: /\bkuda\b/i, provider: "Kuda Bank" },
   { re: /\bopay\b/i, provider: "OPay" },
+  { re: /union bank/i, provider: "Union Bank" },
+  { re: /polaris/i, provider: "Polaris Bank" },
+  { re: /ecobank/i, provider: "EcoBank" },
+  { re: /jaiz/i, provider: "Jaiz Bank" },
+  { re: /unity bank/i, provider: "Unity Bank" },
+  { re: /keystone/i, provider: "Keystone Bank" },
+  { re: /standard chartered/i, provider: "Standard Chartered" },
+  { re: /globus/i, provider: "Globus Bank" },
+  { re: /vulte/i, provider: "VULTe Digital Bank" },
+  { re: /heritage/i, provider: "Heritage Bank" },
+  { re: /brass/i, provider: "Brass" },
+  { re: /altbank/i, provider: "AltBank" },
+  { re: /wallets africa/i, provider: "Wallets Africa" },
+  { re: /airtel tigo/i, provider: "Airtel Tigo" },
+  { re: /m-pesa|mpesa/i, provider: "M-Pesa" },
 ];
 
-const SYSTEMIC_PROVIDERS = new Set(["NIBSS", "CAC"]);
+const SYSTEMIC_PROVIDERS = new Set(["NIBSS", "CAC", "NIMC"]);
 
 export function inferScope(title: string, text: string, provider: string | null): Scope {
   if (!provider) return "systemic";
@@ -277,7 +301,7 @@ export function inferSeverity(title: string, text: string, impactHint?: string):
   return "minor";
 }
 
-export function classifyIncident(title: string, descriptionText: string, descriptionRaw: string) {
+export function classifyIncident(title: string, descriptionText: string, descriptionRaw = "") {
   const text = descriptionText || descriptionRaw;
   const provider = inferProvider(title, text);
   return {

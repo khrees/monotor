@@ -2,11 +2,6 @@ import { describe, expect, it } from "bun:test";
 import { createApp } from "../src/app";
 import { createMonoCache } from "../src/lib/mono";
 
-function mockFetcher(xml: string) {
-  return async () =>
-    new Response(xml, { status: 200, headers: { "Content-Type": "application/xml" } });
-}
-
 describe("health & root", () => {
   const app = createApp(createMonoCache());
 

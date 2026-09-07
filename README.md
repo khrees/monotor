@@ -1,7 +1,7 @@
 # monotor
 
 > **Live Status & Downtime Inference Microservice for Mono APIs**  
-> Built with Bun, Elysia, TypeScript, and fast-xml-parser.
+> Built with Bun, Elysia, and TypeScript.
 
 ---
 
@@ -31,42 +31,46 @@
 
 Partners integrating Mono (e.g. lenders, fintechs, neobanks) frequently face temporary provider outages (e.g., NIBSS downtime, bank maintenance). 
 
-Currently, Mono's only programmatic status channel is an RSS feed (`https://status.mono.co/history.rss`). This presents three major roadblocks for automated systems:
+While Mono publishes incident announcements via its Atlassian Statuspage (`https://status.mono.co`), automated partner systems face three major roadblocks:
 
-1. **Unstructured Prose**: The feed contains human announcements (e.g., *"Debit processing is relatively stable now. However, mandate approval is still experiencing downtime from NIBSS."*). Automated backends cannot evaluate unstructured text in an `if/else` statement.
-2. **Lack of Granular Scoping**: A single bank's mobile app being down does *not* take Mono Connect down. A failure in mandate approval does *not* mean existing scheduled debits will fail. Statuspage treats issues as monolithic.
-3. **No Direct Pre-Flight Endpoint**: Partners cannot make a 1ms pre-flight check before attempting high-stakes operations (like charging an account, approving a mandate, or initiating a bank link).
+1. **Misleading High-Level Status**: Atlassian's top-level status endpoint often reports `"All Systems Operational"` even when multiple banks and specific channels are experiencing active outages.
+2. **Unstructured Prose**: Announcements are written in human prose (e.g., *"Debit processing is relatively stable now. However, mandate approval is still experiencing downtime from NIBSS. The internet banking authentication method remains unaffected."*). Automated backends cannot evaluate unstructured prose in an `if/else` pre-flight check.
+3. **No Direct Pre-Flight Endpoint**: Partners cannot make a sub-millisecond pre-flight query before high-stakes operations (like charging an account, approving a mandate, or initiating a bank link) without false alarms.
 
-`monotor` bridges this gap as a high-performance stopgap microservice. It continuously ingests the RSS feed, runs regex NLP classification to deduce affected products, services, banks, and severity, and exposes a clean, queryable REST API.
+`monotor` bridges this gap as a high-performance stopgap microservice. It ingests Mono's public Atlassian Statuspage v2 REST API (`unresolved.json` + `incidents.json`), runs regex NLP classification to deduce affected products, services, banks, and severity, and exposes a clean, queryable REST API.
 
 ---
 
 ## How It Works
 
 ```
- ┌───────────────────────────────────────────────────────────┐
- │                https://status.mono.co/history.rss         │
- └─────────────────────────────┬─────────────────────────────┘
-                               │ (Polled every 15-30m or on-demand)
-                               ▼
- ┌───────────────────────────────────────────────────────────┐
- │                        monotor                            │
- │                                                           │
- │  1. fast-xml-parser: Ingests RSS channel items             │
- │  2. HTML Stripper & Status Extractor: (Investigating, etc)│
- │  3. Sentence/Clause NLP Classifier (src/lib/classify.ts): │
- │     - Identifies affected products & services             │
- │     - Suppresses negated / unaffected services            │
- │     - Maps banks, auth methods (mobile/internet), scopes  │
- │  4. In-Memory Cache (60s TTL + Request Deduplication)     │
- └─────────────────────────────┬─────────────────────────────┘
-                               │
-                               ▼
- ┌───────────────────────────────────────────────────────────┐
- │         Partner Applications / Pre-Flight Checks          │
- │  GET /api/incidents?product=direct_debit&service=mandate_debit │
- │  GET /api/incidents?product=connect&institution=fcmb      │
- └───────────────────────────────────────────────────────────┘
+ ┌────────────────────────────────────────────────────────────────────────┐
+ │                    Mono Atlassian Statuspage v2 REST API               │
+ │  GET https://status.mono.co/api/v2/incidents/unresolved.json (Active)  │
+ │  GET https://status.mono.co/api/v2/incidents.json (Historical, 50+)    │
+ └───────────────────────────────────┬────────────────────────────────────┘
+                                     │ (Polled every 15-30m or on-demand)
+                                     ▼
+ ┌────────────────────────────────────────────────────────────────────────┐
+ │                               monotor                                  │
+ │                                                                        │
+ │  1. Ingestion Layer (src/lib/mono.ts):                                 │
+ │     - Fetches Statuspage JSON in parallel                              │
+ │     - Overlays unresolved outages on history (prevents silent drops)   │
+ │     - Deduplicates and structures full incident payload                │
+ │  2. Sentence/Clause NLP Classifier (src/lib/classify.ts):              │
+ │     - Identifies affected products & services                          │
+ │     - Suppresses negated / unaffected services                         │
+ │     - Isolates banks & auth methods (mobile vs internet)               │
+ │  3. In-Memory Cache (60s TTL + Request Deduplication + Cron Warming)   │
+ └───────────────────────────────────┬────────────────────────────────────┘
+                                     │
+                                     ▼
+ ┌────────────────────────────────────────────────────────────────────────┐
+ │              Partner Applications / Pre-Flight Checks                  │
+ │  GET /api/incidents?product=direct_debit&service=mandate_debit         │
+ │  GET /api/incidents?product=connect&institution=fcmb&auth_method=mobile│
+ └────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -128,7 +132,7 @@ The test suite validates parsing, sentence-level negation, granularity, and stat
 
 ```bash
 bun test
-# 40 pass, 0 fail, 164 assertions
+# 40 pass, 0 fail, 155 assertions
 
 # Type checking
 bun run typecheck
@@ -357,7 +361,7 @@ All error responses adhere to a standard JSON contract:
 |---|---|---|
 | `404` | `not_found` | Unknown path or non-existent incident ID |
 | `422` | `invalid_param` | Invalid enum value supplied in query parameters |
-| `502` | `upstream_unavailable` | Mono Statuspage RSS feed unreachable |
+| `502` | `upstream_unavailable` | Mono Statuspage API unreachable |
 
 ---
 
@@ -381,11 +385,12 @@ CRON_INTERVAL_MINUTES=15 bun run start
 ## Testing & Quality Assurance
 
 The codebase includes 40 comprehensive tests covering:
-- XML extraction & HTML entity sanitization.
+- Ingestion of Atlassian Statuspage v2 REST API (`unresolved.json` + `incidents.json`).
 - Sentence-level negation (preventing "Debit processing remains unaffected" from falsely tagging debits).
 - Deduplication of broad categories when specific services are present (e.g. `mandate` $\to$ `mandate_approval`).
 - Bank authentication isolation (mobile outage vs internet banking).
 - Product and service alias resolution.
+- In-memory cache deduplication and background cron warming.
 
 Run tests:
 ```bash

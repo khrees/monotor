@@ -14,7 +14,6 @@
   "dependencies": {
     "@elysiajs/cors": "^1.4.2",
     "elysia": "^1.4.30",
-    "fast-xml-parser": "^5.11.1",
     "zod": "^4.5.4"
   },
   "devDependencies": {

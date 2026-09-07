@@ -1,44 +1,46 @@
-import { XMLParser } from "fast-xml-parser";
 import type { Incident } from "../schemas/mono";
 import { classifyIncident, PRODUCT_ALIASES } from "./classify";
 
-export const RSS_URL = "https://status.mono.co/history.rss";
+export const STATUS_API_BASE = "https://status.mono.co/api/v2";
+export const STATUS_INCIDENTS_URL = `${STATUS_API_BASE}/incidents.json`;
+export const STATUS_UNRESOLVED_URL = `${STATUS_API_BASE}/incidents/unresolved.json`;
+export const STATUS_SUMMARY_URL = `${STATUS_API_BASE}/summary.json`;
 export const CACHE_TTL_MS = 60_000;
 
-const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_" });
-
-export function stripHtml(html: string | unknown): string {
-  const str = typeof html === "string" ? html : html == null ? "" : String(html);
-  return str.replace(/<[^>]*>/g, " ")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&amp;/g, "&")
-    .replace(/&apos;/g, "'")
-    .replace(/&quot;/g, '"')
-    .replace(/\s+/g, " ")
-    .trim();
+export interface StatuspageIncidentUpdate {
+  id: string;
+  status: string;
+  body: string;
+  created_at: string;
+  updated_at: string;
+  display_at: string;
+  affected_components?: Array<{
+    code: string;
+    name: string;
+    old_status: string;
+    new_status: string;
+  }> | null;
 }
 
-export function extractLatestStatus(description: string): string | null {
-  const matches = [...description.matchAll(/<strong>([^<]+)<\/strong>/gi)].map((m) => m[1].trim());
-  return matches[0] ?? null;
+export interface StatuspageComponent {
+  id: string;
+  name: string;
+  status: string;
+  description?: string | null;
 }
 
-export function extractIncidentId(url: string | unknown): string {
-  if (url == null || url === "") return "";
-  const str = String(url);
-  const parts = str.replace(/\/$/, "").split("/");
-  return parts[parts.length - 1] ?? str;
-}
-
-export function isIncidentActive(item: { title?: string; description?: string }): boolean {
-  const latest = (extractLatestStatus(item.description ?? "") ?? "").toLowerCase();
-  if (["resolved", "completed", "operational"].includes(latest)) return false;
-  if (!latest) {
-    const text = stripHtml(item.description ?? "").toLowerCase();
-    if (text.includes("resolved") || text.includes("completed")) return false;
-  }
-  return true;
+export interface StatuspageIncidentRaw {
+  id: string;
+  name: string;
+  status: string;
+  impact?: string | null;
+  created_at?: string;
+  started_at?: string;
+  resolved_at?: string | null;
+  updated_at?: string;
+  shortlink?: string;
+  incident_updates?: StatuspageIncidentUpdate[];
+  components?: StatuspageComponent[];
 }
 
 export type IncidentFilters = {
@@ -61,10 +63,11 @@ export const SERVICE_ALIASES: Record<string, string> = {
 
 export function filterIncidents(incidents: Incident[], filters: IncidentFilters): Incident[] {
   let result = incidents;
+
   if (filters.product) {
     const raw = filters.product.toLowerCase();
-    const p = PRODUCT_ALIASES[raw] ?? raw;
-    result = result.filter((i) => i.products.some((x) => x.toLowerCase() === p));
+    const resolved = PRODUCT_ALIASES[raw] ?? raw;
+    result = result.filter((i) => i.products.some((p) => p.toLowerCase() === resolved));
   }
   if (filters.service) {
     const raw = filters.service.toLowerCase();
@@ -96,60 +99,114 @@ export function filterIncidents(incidents: Incident[], filters: IncidentFilters)
   return result;
 }
 
-export function parseMonoRss(xml: string): Incident[] {
-  const parsed = parser.parse(xml);
-  const rawItems = parsed?.rss?.channel?.item ?? [];
-  const items: any[] = Array.isArray(rawItems) ? rawItems : rawItems ? [rawItems] : [];
+export function transformStatuspageIncident(inc: StatuspageIncidentRaw): Incident {
+  const title = inc.name ?? "Untitled";
+  const updates = inc.incident_updates ?? [];
+  const latestUpdate = updates[0];
+  const rawStatus = latestUpdate?.status ?? inc.status ?? "investigating";
+  const status = rawStatus ? rawStatus.charAt(0).toUpperCase() + rawStatus.slice(1).toLowerCase() : null;
 
-  const withTimestamp = items.map((item) => {
-    const pubDate = new Date(item.pubDate);
-    const ts = pubDate.getTime();
-    const rawDesc: string =
-      typeof item.description === "string" ? item.description : item.description?.["#text"] ?? item.description?.toString?.() ?? "";
-    const description = stripHtml(rawDesc);
-    const title: string = item.title ?? "Untitled";
-    const cls = classifyIncident(title, description, rawDesc);
-    const rawLink: string = item.link ?? "";
-    const rawGuid: string = typeof item.guid === "object" ? item.guid["#text"] ?? item.guid : item.guid ?? rawLink ?? "";
-    const link = rawLink || (rawGuid.startsWith("http") ? rawGuid : `https://status.mono.co/incidents/${rawGuid}`);
-    const id = extractIncidentId(rawGuid || rawLink);
+  const description = updates
+    .map((u) => {
+      const prefix = u.status ? `${u.status.charAt(0).toUpperCase() + u.status.slice(1)} - ` : "";
+      return `${prefix}${u.body}`.trim();
+    })
+    .filter(Boolean)
+    .join("\n\n") || (latestUpdate?.body ?? "");
 
-    return {
-      _ts: ts,
-      title,
-      description,
-      link,
-      id,
-      published_at: isNaN(ts) ? new Date().toISOString() : pubDate.toISOString(),
-      is_ongoing: isIncidentActive(item),
-      status: extractLatestStatus(rawDesc),
-      products: cls.products,
-      affected_services: cls.affected_services,
-      outage_type: cls.outage_type,
-      provider: cls.provider,
-      institution: cls.institution,
-      auth_method: cls.auth_method,
-      scope: cls.scope,
-      severity: cls.severity,
-    };
-  });
+  const componentNames = [
+    ...(inc.components ?? []).map((c) => c.name),
+    ...updates.flatMap((u) => (u.affected_components ?? []).map((ac) => ac.name)),
+  ];
+  const componentText = componentNames.filter(Boolean).join(" ");
 
-  withTimestamp.sort((a, b) => b._ts - a._ts);
-  return withTimestamp.map(({ _ts, ...rest }) => rest);
+  const cls = classifyIncident(title, `${description}\n${componentText}`);
+
+  let severity = cls.severity;
+  if (cls.scope === "institution" && severity === "major") {
+    severity = "minor";
+  } else if (inc.impact === "critical" && cls.scope === "systemic") {
+    severity = "critical";
+  }
+
+  const id = inc.id;
+  const link = `https://status.mono.co/incidents/${id}`;
+  const pubDate = inc.updated_at || latestUpdate?.created_at || inc.started_at || inc.created_at || new Date().toISOString();
+  const is_ongoing = inc.status !== "resolved" && inc.resolved_at === null;
+
+  return {
+    title,
+    description,
+    link,
+    id,
+    published_at: new Date(pubDate).toISOString(),
+    is_ongoing,
+    status,
+    products: cls.products,
+    affected_services: cls.affected_services,
+    outage_type: cls.outage_type,
+    provider: cls.provider,
+    institution: cls.institution,
+    auth_method: cls.auth_method,
+    scope: cls.scope,
+    severity,
+  };
+}
+
+export function parseStatuspageJson(data: string | { incidents?: StatuspageIncidentRaw[] }): Incident[] {
+  const parsed = typeof data === "string" ? JSON.parse(data) : data;
+  const rawIncidents: StatuspageIncidentRaw[] = parsed?.incidents ?? (Array.isArray(parsed) ? parsed : []);
+  const items = rawIncidents.map(transformStatuspageIncident);
+  items.sort((a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime());
+  return items;
+}
+
+export function mergeAndParseStatuspageJson({
+  unresolved = [],
+  historical = [],
+}: {
+  unresolved?: StatuspageIncidentRaw[];
+  historical?: StatuspageIncidentRaw[];
+}): Incident[] {
+  const map = new Map<string, StatuspageIncidentRaw>();
+  for (const inc of historical) {
+    if (inc?.id) map.set(inc.id, inc);
+  }
+  for (const inc of unresolved) {
+    if (inc?.id) map.set(inc.id, inc);
+  }
+  const items = Array.from(map.values()).map(transformStatuspageIncident);
+  items.sort((a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime());
+  return items;
 }
 
 export async function fetchMonoFeed(fetcher: typeof fetch = fetch): Promise<Incident[]> {
   const signal = typeof AbortSignal !== "undefined" && "timeout" in AbortSignal
     ? AbortSignal.timeout(8000)
     : undefined;
+  const headers = { "User-Agent": "Monotor/0.1.0 (+https://github.com/khrees/monotor)" };
 
-  const res = await fetcher(RSS_URL, {
-    headers: { "User-Agent": "Monotor/0.1.0 (+https://github.com/khrees/monotor)" },
-    signal,
-  });
-  if (!res.ok) throw new Error(`Failed to fetch RSS: ${res.status} ${res.statusText}`);
-  const xml = await res.text();
-  return parseMonoRss(xml);
+  const [unresRes, incRes] = await Promise.all([
+    fetcher(STATUS_UNRESOLVED_URL, { headers, signal }).catch(() => null),
+    fetcher(STATUS_INCIDENTS_URL, { headers, signal }).catch(() => null),
+  ]);
+
+  const validRes = incRes?.ok ? incRes : unresRes?.ok ? unresRes : null;
+  if (!validRes) {
+    throw new Error(`Statuspage API request failed: unres=${unresRes?.status}, inc=${incRes?.status}`);
+  }
+
+  const unresJson = unresRes?.ok ? await unresRes.json().catch(() => null) : null;
+  const incJson = incRes?.ok ? await incRes.json().catch(() => null) : null;
+
+  if (unresJson || incJson) {
+    return mergeAndParseStatuspageJson({
+      unresolved: unresJson?.incidents ?? (Array.isArray(unresJson) ? unresJson : []),
+      historical: incJson?.incidents ?? (Array.isArray(incJson) ? incJson : []),
+    });
+  }
+
+  throw new Error("Invalid Statuspage API response");
 }
 
 export function createMonoCache(ttlMs = CACHE_TTL_MS) {

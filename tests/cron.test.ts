@@ -2,7 +2,33 @@ import { describe, expect, it } from "bun:test";
 import { startMonoCron, getCronIntervalMinutes } from "../src/lib/cron";
 import { createMonoCache } from "../src/lib/mono";
 
-const SAMPLE_RSS = `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><item><title>Direct Debit: Intermittent Downtime</title><description>&lt;p&gt;&lt;strong&gt;Identified&lt;/strong&gt; - downtime from NIBSS.&lt;/p&gt;</description><pubDate>Fri, 04 Sep 2026 17:46:59 +0100</pubDate><link>https://status.mono.co/incidents/abc123</link><guid>https://status.mono.co/incidents/abc123</guid></item></channel></rss>`;
+const SAMPLE_STATUSPAGE_PAYLOAD = JSON.stringify({
+  incidents: [
+    {
+      id: "abc123",
+      name: "Direct Debit: Intermittent Downtime",
+      status: "identified",
+      impact: "major",
+      created_at: "2026-09-04T17:46:59+01:00",
+      started_at: "2026-09-04T17:46:59+01:00",
+      resolved_at: null,
+      updated_at: "2026-09-04T17:46:59+01:00",
+      shortlink: "https://stspg.io/abc123",
+      incident_updates: [
+        {
+          id: "u1",
+          status: "identified",
+          body: "downtime from NIBSS.",
+          created_at: "2026-09-04T17:46:59+01:00",
+          updated_at: "2026-09-04T17:46:59+01:00",
+          display_at: "2026-09-04T17:46:59+01:00",
+          affected_components: [],
+        },
+      ],
+      components: [],
+    },
+  ],
+});
 
 describe("cron", () => {
   it("getCronIntervalMinutes defaults to 30, respects env", () => {
@@ -19,7 +45,8 @@ describe("cron", () => {
   });
 
   it("startMonoCron ticks and caches", async () => {
-    const fetcher = async () => new Response(SAMPLE_RSS, { status: 200 });
+    const fetcher = async () =>
+      new Response(SAMPLE_STATUSPAGE_PAYLOAD, { status: 200, headers: { "Content-Type": "application/json" } });
     const cache = createMonoCache(60_000);
     // prime cache via cron tick (cron uses cache.get which calls fetcher)
     // inject fetcher by temporarily monkey-patching fetch
